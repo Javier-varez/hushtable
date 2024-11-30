@@ -12,3 +12,7 @@ criterion = "0.3"
 [[bench]]
 name = "hushtable"
 harness = false
+
+[[bench]]
+name = "realistic"
+harness = false
