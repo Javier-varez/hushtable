@@ -290,14 +290,30 @@ enum Status {
 type Index = usize;
 const INVALID_INDEX: usize = usize::MAX;
 
+#[derive(Clone, Copy)]
+struct Link {
+    prev: Index,
+    next: Index,
+}
+
+impl Link {
+    const fn new() -> Self {
+        Self {
+            prev: INVALID_INDEX,
+            next: INVALID_INDEX,
+        }
+    }
+}
+
 /// Stores internal metadata for the table usage:
 ///  - A slot status indicating if the slot is valid, invalid or deleted.
 ///  - Linkage information to determine the order of entries, needed by `get_last` and `get_first`.
 struct Meta<const SIZE: usize> {
     status: [Status; SIZE],
-    // These 2 members form a doubly-linked list with the order of the elements.
-    forward_links: [Index; SIZE],
-    backward_links: [Index; SIZE],
+    // Metadata for a doubly-linked list with the order of the elements. I initially had 2 arrays,
+    // one for the forward links another for the backward links. But this gives better performance
+    // -7% to -10% according to criterion.
+    links: [Link; SIZE],
     // Points to the most-recently used entry in the table, if any
     head: Index,
     // Points to the most-recently used entry in the table, if any
@@ -308,8 +324,7 @@ impl<const SIZE: usize> Meta<SIZE> {
     const fn new() -> Self {
         Self {
             status: [Status::Free; SIZE],
-            forward_links: [INVALID_INDEX; SIZE],
-            backward_links: [INVALID_INDEX; SIZE],
+            links: [Link::new(); SIZE],
             head: INVALID_INDEX,
             tail: INVALID_INDEX,
         }
@@ -333,10 +348,10 @@ impl<const SIZE: usize> Meta<SIZE> {
             self.head = new_head;
 
             // The head should never have an element after it.
-            debug_assert_eq!(self.forward_links[prev_head], INVALID_INDEX);
+            debug_assert_eq!(self.links[prev_head].next, INVALID_INDEX);
 
-            self.forward_links[prev_head] = new_head;
-            self.backward_links[new_head] = prev_head;
+            self.links[prev_head].next = new_head;
+            self.links[new_head].prev = prev_head;
         } else {
             // We are inserting the first element into the table. There are no links back and
             // forth, just setting the head and tail will be enough.
@@ -351,21 +366,21 @@ impl<const SIZE: usize> Meta<SIZE> {
         debug_assert_eq!(self.status[to_remove], Status::Used);
         self.status[to_remove] = Status::Deleted;
 
-        let prev_idx = self.backward_links[to_remove];
-        let next_idx = self.forward_links[to_remove];
+        let prev_idx = self.links[to_remove].prev;
+        let next_idx = self.links[to_remove].next;
 
-        self.forward_links[to_remove] = INVALID_INDEX;
-        self.backward_links[to_remove] = INVALID_INDEX;
+        self.links[to_remove].next = INVALID_INDEX;
+        self.links[to_remove].prev = INVALID_INDEX;
 
         if INVALID_INDEX != prev_idx {
-            self.forward_links[prev_idx] = next_idx;
+            self.links[prev_idx].next = next_idx;
         } else {
             // The element was the tail, it has nothing before it.
             self.tail = next_idx;
         }
 
         if INVALID_INDEX != next_idx {
-            self.backward_links[next_idx] = prev_idx;
+            self.links[next_idx].prev = prev_idx;
         } else {
             // The element was the head, it has nothing after it.
             self.head = prev_idx;
