@@ -190,7 +190,6 @@ where
                     return Ok(());
                 }
                 Status::Used => {
-                    // FIXME: The table is full and the key is not present
                     index = (index + 1) % SIZE;
                 }
             }
@@ -254,7 +253,6 @@ where
                     }
                 }
                 Status::Removed | Status::Used => {
-                    // FIXME: The table is full and the key is not present
                     index = (index + 1) % SIZE;
                 }
             }
@@ -306,7 +304,6 @@ where
                     return Some(unsafe { self.values[index].assume_init_ref() });
                 }
                 Status::Removed | Status::Used => {
-                    // FIXME: The table is full and the key is not present
                     index = (index + 1) % SIZE;
                 }
             }
