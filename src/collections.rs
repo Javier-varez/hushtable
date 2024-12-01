@@ -15,8 +15,10 @@ const DEFAULT_SIZE: usize = 1024;
 ///
 /// The size is fixed and given by a generic parameter `Size`.
 ///
-/// Note that the internal fields of the map are boxed so that moving a map does not imply a large
+/// Note that the internal data of the map is boxed so that moving a map does not imply a large
 /// copy of data. Additionally, this reduces the risk of stack overflow when the maps are large.
+/// This is the behavior of most map types in non-embedded environments where heap memory
+/// allocation is not forbidden.
 pub struct HashMap<K, V, H = BuildHasherDefault<DefaultHasher>, const SIZE: usize = DEFAULT_SIZE>
 where
     H: BuildHasher + Default,
@@ -83,7 +85,7 @@ where
         self.inner.get_last()
     }
 
-    /// returns the least recent key-value pair that was either inserted or
+    /// Returns the least recent key-value pair that was either inserted or
     /// updated and is still present
     pub fn get_first(&self) -> Option<(&K, &V)> {
         self.inner.get_first()
@@ -106,7 +108,7 @@ where
     // A contiguous metadata block should have better cache locality properties when the entry is not
     // found, hopefully allowing faster linear probing.
     // In principle, we could be smart here and compress the metadata and do the lookup using SIMD
-    // instructions.
+    // instructions. This could be implemented in a separate step.
     meta: Meta<SIZE>,
     hasher_builder: H,
 }
@@ -136,19 +138,48 @@ where
     H: BuildHasher + Default,
 {
     /// Inserts a new key-value pair or replaces a key’s existing value
+    /// Time complexity:
+    ///   - O(1). The best case, in which we have a good hash function,
+    ///     and the load factor of the map is kept small enough, the insertion time
+    ///     is constant because the hash operation does not depend on the size of the map,
+    ///     and we know immediately where to insert the entry into the map.
+    ///
+    ///     In addition, keeping the order of insertion/updates of keys is also implemented with a
+    ///     constant-time algorithm. See the `mark_used` function documentation for details
+    ///
+    ///     To mitigate the overhead caused by the linear lookup, we could paralellize the lookup
+    ///     of 16 (with SSE instructions to 16 consecutive elements at a time, or AVX to 32, or
+    ///     AVX512 to 64). Virtually bringing the overhead to zero.
     fn insert(&mut self, key: K, value: V) -> Result<(), Error> {
         let hash = self.hasher_builder.hash_one(&key);
         let mut index = (hash as usize) % SIZE;
 
+        // SAFETY: the address given to prefetch is valid as it comes from an object with valid
+        // lifetime.
+        unsafe {
+            std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(
+                &self.meta.links[index] as *const _ as *const _,
+            );
+            std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T1 }>(
+                &self.keys[index] as *const _ as *const _,
+            );
+        }
+
         for _ in 0..SIZE {
             match self.meta.status[index] {
-                Status::Free | Status::Deleted => {
+                Status::Free | Status::Removed => {
                     self.keys[index].write(key);
                     self.values[index].write(value);
+                    // Updates the metadata to set the used status and update the temporal
+                    // information.
                     self.meta.mark_used(index);
                     return Ok(());
                 }
+                // SAFETY: `key_matches` is only called after checking that `index` belongs to an
+                // initialized object.
                 Status::Used if unsafe { self.key_matches(index, &key) } => {
+                    // SAFETY: We know that the objects are initialized because their status is
+                    // `Used`.
                     unsafe {
                         // Droping the old key-value pair intentionally, as it has been replaced.
                         let _ = std::mem::replace(self.keys[index].assume_init_mut(), key);
@@ -168,6 +199,20 @@ where
     }
 
     /// Removes the corresponding key-value pair
+    /// Time complexity:
+    ///   - O(1). The best case, in which we have a good hash function,
+    ///     and the load factor of the map is kept small enough, the lookup time
+    ///     is constant because the hash operation does not depend on the size of the map,
+    ///     and we know immediately where to remove the entry of the map. The actual removal
+    ///     consists of simply extracting the values and marking the entry as removed.
+    ///
+    ///     In addition, keeping the order of insertion/updates of keys is also implemented with a
+    ///     constant-time algorithm. See the `mark_removed` function documentation for details.
+    ///
+    /// Potential improvements:
+    ///     To mitigate the overhead caused by the linear lookup, we could paralellize the lookup
+    ///     of 16 (with SSE instructions to 16 consecutive elements at a time, or AVX to 32, or
+    ///     AVX512 to 64). Virtually bringing the overhead to zero.
     fn remove<Q>(&mut self, key: &Q) -> Option<(K, V)>
     where
         Q: Hash + Eq + ?Sized,
@@ -177,25 +222,36 @@ where
         let hash = build_hasher.hash_one(key);
         let mut index = (hash as usize) % SIZE;
 
+        // SAFETY: the address given to prefetch is valid as it comes from an object with valid
+        // lifetime.
+        unsafe {
+            // Prefetching keys or values did not show relevant performance improvement in my
+            // testing.
+            std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(
+                &self.meta.links[index] as *const _ as *const _,
+            );
+        }
+
         for _ in 0..SIZE {
             match self.meta.status[index] {
                 Status::Free => {
                     // The entry is not in the hash map
                     return None;
                 }
+                // SAFETY: `key_matches` is only called after checking that `index` belongs to an
+                // initialized object.
                 Status::Used if unsafe { self.key_matches(index, key) } => {
                     self.meta.mark_removed(index);
 
-                    // SAFETY:
-                    //   - We know that both keys[index] and the value taken from values[index]
-                    //     were initialized because the status[index] flag was Used.
                     let key = std::mem::replace(&mut self.keys[index], MaybeUninit::uninit());
                     let value = std::mem::replace(&mut self.values[index], MaybeUninit::uninit());
+                    // SAFETY: We know that key and value are initialized because their status is
+                    // `Used`.
                     unsafe {
                         return Some((key.assume_init(), value.assume_init()));
                     }
                 }
-                Status::Deleted | Status::Used => {
+                Status::Removed | Status::Used => {
                     // FIXME: The table is full and the key is not present
                     index = (index + 1) % SIZE;
                 }
@@ -207,6 +263,19 @@ where
     }
 
     /// Returns the value of the corresponding key
+    /// Time complexity:
+    ///   - O(1). The best case, in which we have a good hash function,
+    ///     and the load factor of the map is kept small enough, the lookup time
+    ///     is constant because the hash operation does not depend on the size of the map,
+    ///     and we know immediately where to remove the entry of the map.
+    ///
+    ///     this operation is not affected by keeping the order of entries in the map, since it
+    ///     does not modify the map.
+    ///
+    /// Potential improvements:
+    ///     To mitigate the overhead caused by the linear lookup, we could paralellize the lookup
+    ///     of 16 (with SSE instructions to 16 consecutive elements at a time, or AVX to 32, or
+    ///     AVX512 to 64). Virtually bringing the overhead to zero.
     fn get<Q>(&self, key: &Q) -> Option<&V>
     where
         // Q is borrowed so we don't need it to be sized. This gives us better ergonomics with
@@ -218,16 +287,23 @@ where
         let hash = build_hasher.hash_one(key);
         let mut index = (hash as usize) % SIZE;
 
+        // Prefetching did not show any advantage in my benchmarks. I tried to prefetch keys and
+        // values or combinations of them.
+
         for _ in 0..SIZE {
             match self.meta.status[index] {
                 Status::Free => {
                     // The entry is not in the hash map
                     return None;
                 }
+                // SAFETY: `key_matches` is only called after checking that `index` belongs to an
+                // initialized object.
                 Status::Used if unsafe { self.key_matches(index, key) } => {
+                    // SAFETY: We know that value is initialized because its status is
+                    // `Used`.
                     return Some(unsafe { self.values[index].assume_init_ref() });
                 }
-                Status::Deleted | Status::Used => {
+                Status::Removed | Status::Used => {
                     // FIXME: The table is full and the key is not present
                     index = (index + 1) % SIZE;
                 }
@@ -240,6 +316,10 @@ where
 
     /// Returns the most recent key-value pair that was either inserted or
     /// updated and is still present,
+    /// Time complexity:
+    ///   - O(1) in all cases. We keep a head and a tail index pointing to the most recently
+    ///     inserted or updated entry. All we have to do is check if it is valid and if so retrieve
+    ///     the key and value pairs from the given index.
     fn get_last(&self) -> Option<(&K, &V)> {
         let index = self.meta.head;
         self.get_at_index(index)
@@ -247,6 +327,10 @@ where
 
     /// returns the least recent key-value pair that was either inserted or
     /// updated and is still present
+    /// Time complexity:
+    ///   - O(1) in all cases. We keep a head and a tail index pointing to the most recently
+    ///     inserted or updated entry. All we have to do is check if it is valid and if so retrieve
+    ///     the key and value pairs from the given index.
     fn get_first(&self) -> Option<(&K, &V)> {
         let index = self.meta.tail;
         self.get_at_index(index)
@@ -256,6 +340,8 @@ where
         if INVALID_INDEX != index {
             debug_assert_eq!(self.meta.status[index], Status::Used);
 
+            // The indexes stored in meta.links always point to valid objects, or to
+            // INVALID_INDEX, which was already checked.
             unsafe {
                 Some((
                     self.keys[index].assume_init_ref(),
@@ -267,6 +353,8 @@ where
         }
     }
 
+    /// This function checks whether the key in the hashmap located at `index` matches the given
+    /// key. The caller must ensure that the index passed belongs to a valid object within the map.
     unsafe fn key_matches<Q>(&self, index: usize, key: &Q) -> bool
     where
         Q: Eq + ?Sized,
@@ -281,7 +369,7 @@ where
 enum Status {
     Free,
     Used,
-    Deleted,
+    Removed,
 }
 
 // We really don't need all 64-bits of an index, considering no table will ever have that amount of
@@ -330,6 +418,8 @@ impl<const SIZE: usize> Meta<SIZE> {
         }
     }
 
+    /// Time complexity: O(1) because it is a simple linked list insertion (and removal if the
+    /// element was already in the map)
     fn mark_used(&mut self, new_head: usize) {
         // We should never get an invalid index here
         debug_assert_ne!(INVALID_INDEX, new_head);
@@ -360,11 +450,12 @@ impl<const SIZE: usize> Meta<SIZE> {
         }
     }
 
+    /// Time complexity: O(1) because it is a simple linked list removal.
     fn mark_removed(&mut self, to_remove: usize) {
         // We should never get an invalid index here
         debug_assert_ne!(INVALID_INDEX, to_remove);
         debug_assert_eq!(self.status[to_remove], Status::Used);
-        self.status[to_remove] = Status::Deleted;
+        self.status[to_remove] = Status::Removed;
 
         let prev_idx = self.links[to_remove].prev;
         let next_idx = self.links[to_remove].next;
