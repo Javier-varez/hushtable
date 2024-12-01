@@ -29,12 +29,12 @@ Additional optimizations that could be performed:
 All the code has been kept with 0 clippy lints and formatted with rustfmt.
 
 Build the library with:
-```
+```shell
 cargo build --release
 ```
 
 Run tests:
-```
+```shell
 # if you have cargo-nextest
 cargo nextest run
 # otherwise
@@ -42,8 +42,11 @@ cargo test
 ```
 
 Run benchmarks:
-```
-cargo bench
+```shell
+# if needed, install criterion
+cargo binstall cargo-criterion
+# then run the benchmarks
+cargo criterion
 ```
   
 ## Benchmark results
@@ -51,44 +54,24 @@ cargo bench
 Benchmarking on a Ryzen 3900X CPU with 32 GiB of RAM.
 
 ```
-     Running benches/hushtable.rs (target/release/deps/hushtable-66baac9cc39eaa1b)
-insertion/Hushtable     time:   [7.6673 µs 7.6786 µs 7.6918 µs]                                 
-insertion/std           time:   [15.404 µs 15.417 µs 15.429 µs]                           
+insertion/Hushtable     time:   [9.1546 µs 9.3686 µs 9.5452 µs]
+insertion/std           time:   [14.966 µs 14.984 µs 15.003 µs]
 
-removal/Hushtable       time:   [7.6766 µs 7.7025 µs 7.7332 µs]                               
-Found 2 outliers among 100 measurements (2.00%)
-  2 (2.00%) high mild
-removal/std             time:   [14.910 µs 14.933 µs 14.967 µs]                         
+removal/Hushtable       time:   [7.5918 µs 7.6005 µs 7.6107 µs]
+removal/std             time:   [14.716 µs 14.748 µs 14.788 µs]
 
-lookup/Hushtable        time:   [6.4002 µs 6.4332 µs 6.4647 µs]                              
-lookup/std              time:   [10.593 µs 10.598 µs 10.604 µs]                        
-Found 3 outliers among 100 measurements (3.00%)
-  1 (1.00%) low severe
-  1 (1.00%) low mild
-  1 (1.00%) high mild
+lookup/Hushtable        time:   [6.5004 µs 6.5051 µs 6.5113 µs]
+lookup/std              time:   [10.716 µs 10.735 µs 10.753 µs]
 
-     Running benches/realistic.rs (target/release/deps/realistic-daa41d96750f48dd)
-insert_dataset/Hushtable                                                                            
-                        time:   [62.116 µs 62.513 µs 62.845 µs]
-Found 3 outliers among 100 measurements (3.00%)
-  3 (3.00%) low severe
-insert_dataset/std      time:   [50.877 µs 50.980 µs 51.104 µs]                               
+insert_dataset/Hushtable
+                        time:   [62.557 µs 63.112 µs 63.586 µs]
+insert_dataset/std      time:   [49.631 µs 49.754 µs 49.901 µs]
 
-remove_dataset/Hushtable                                                                            
-                        time:   [35.303 µs 35.367 µs 35.438 µs]
-Found 3 outliers among 100 measurements (3.00%)
-  3 (3.00%) high mild
-remove_dataset/std      time:   [39.869 µs 39.907 µs 39.950 µs]                               
-Found 5 outliers among 100 measurements (5.00%)
-  2 (2.00%) high mild
-  3 (3.00%) high severe
+remove_dataset/Hushtable
+                        time:   [34.089 µs 34.495 µs 34.884 µs]
+remove_dataset/std      time:   [37.891 µs 37.942 µs 37.999 µs]
 
-lookup_dataset/Hushtable                                                                            
-                        time:   [21.820 µs 21.900 µs 21.996 µs]
-Found 3 outliers among 100 measurements (3.00%)
-  2 (2.00%) high mild
-  1 (1.00%) high severe
-lookup_dataset/std      time:   [25.469 µs 25.576 µs 25.691 µs]                               
-Found 2 outliers among 100 measurements (2.00%)
-  2 (2.00%) high mild
+lookup_dataset/Hushtable
+                        time:   [22.393 µs 22.507 µs 22.640 µs]
+lookup_dataset/std      time:   [22.397 µs 22.478 µs 22.574 µs]
 ```
