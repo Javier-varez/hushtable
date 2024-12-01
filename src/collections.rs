@@ -156,6 +156,7 @@ where
 
         // SAFETY: the address given to prefetch is valid as it comes from an object with valid
         // lifetime.
+        #[cfg(target_arch = "x86_64")]
         unsafe {
             std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(
                 &self.meta.links[index] as *const _ as *const _,
@@ -224,6 +225,7 @@ where
 
         // SAFETY: the address given to prefetch is valid as it comes from an object with valid
         // lifetime.
+        #[cfg(target_arch = "x86_64")]
         unsafe {
             // Prefetching keys or values did not show relevant performance improvement in my
             // testing.
